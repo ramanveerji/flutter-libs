@@ -2,9 +2,20 @@ name: Flutter Build
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Flutter version (e.g. 3.27.1) OR Dart SDK version (e.g. 3.5.4)'
+        required: true
+        default: '3.27.1'
+        type: string
+      build_armv7:
+        description: 'Build for armeabi-v7a (32-bit ARM)'
+        required: true
+        type: boolean
+        default: false
 
-env:
-  MY_TOKEN: ${{ secrets.MY_TOKEN }}
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -12,12 +23,47 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+
+      - name: Resolve Flutter Version from Input
+        id: resolve_version
+        run: |
+          PYTHON_SCRIPT='
+          import sys, urllib.request, json
+          query = sys.argv[1].strip()
+          url = "https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json"
+          try:
+              req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+              data = json.loads(urllib.request.urlopen(req).read())
+              # Check Flutter exact version
+              for r in data["releases"]:
+                  if r.get("version") == query:
+                      print(r["version"])
+                      sys.exit(0)
+              # Check Dart SDK version (stable first)
+              for r in data["releases"]:
+                  dart_ver = r.get("dart_sdk_version", "")
+                  if r.get("channel") == "stable" and (dart_ver == query or dart_ver.startswith(query + " ") or dart_ver.startswith(query + "-")):
+                      print(r["version"])
+                      sys.exit(0)
+              # Check Dart SDK version (any channel)
+              for r in data["releases"]:
+                  dart_ver = r.get("dart_sdk_version", "")
+                  if dart_ver == query or dart_ver.startswith(query + " ") or dart_ver.startswith(query + "-"):
+                      print(r["version"])
+                      sys.exit(0)
+          except Exception as e:
+              pass
+          print(query)
+          '
+          RESOLVED_VERSION=$(python3 -c "$PYTHON_SCRIPT" "${{ inputs.version }}")
+          echo "Resolved Flutter Version: $RESOLVED_VERSION"
+          echo "flutter_version=$RESOLVED_VERSION" >> $GITHUB_OUTPUT
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.38.9'
+          flutter-version: ${{ steps.resolve_version.outputs.flutter_version }}
 
       - name: Print Flutter version
         run: flutter --version
@@ -28,38 +74,31 @@ jobs:
           cd flutter_so
           flutter pub get
 
-      - name: Build apk for arm64 and armeabi-v7a
+      - name: Build APK for target platforms
         run: |
           cd flutter_so
-          flutter build apk --release --target-platform android-arm,android-arm64
+          TARGET_PLATFORMS="android-arm64"
+          if [ "${{ inputs.build_armv7 }}" = "true" ]; then
+            TARGET_PLATFORMS="android-arm,android-arm64"
+          fi
+          echo "Building APK for target platforms: $TARGET_PLATFORMS"
+          flutter build apk --release --target-platform "$TARGET_PLATFORMS"
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ env.MY_TOKEN }}
+      - name: Copy & Rename Shared Libraries
+        run: |
+          mkdir -p output_libs
+          find flutter_so/build/app/intermediates/ -name "libflutter.so" | grep "arm64-v8a" | head -n 1 | xargs -I {} cp {} output_libs/libflutter_so_arm64.so
+          if [ "${{ inputs.build_armv7 }}" = "true" ]; then
+            find flutter_so/build/app/intermediates/ -name "libflutter.so" | grep "armeabi-v7a" | head -n 1 | xargs -I {} cp {} output_libs/libflutter_so_armeabi_v7a.so
+          fi
+
+      - name: Create GitHub Release & Upload Assets
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: flutter-v3.19.5
-          release_name: Flutter Release v3.19.5
+          tag_name: flutter-v${{ steps.resolve_version.outputs.flutter_version }}
+          name: Flutter Release v${{ steps.resolve_version.outputs.flutter_version }}
           draft: false
           prerelease: false
-
-      - name: Upload libflutter.so for arm64
-        uses: actions/upload-release-asset@v1
+          files: output_libs/*
         env:
-          GITHUB_TOKEN: ${{ env.MY_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: flutter_so/build/app/intermediates/merged_native_libs/release/out/lib/arm64-v8a/libflutter.so
-          asset_name: libflutter_so_arm64.so
-          asset_content_type: application/octet-stream
-
-      - name: Upload libflutter.so for armeabi-v7a
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ env.MY_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: flutter_so/build/app/intermediates/merged_native_libs/release/out/lib/armeabi-v7a/libflutter.so
-          asset_name: libflutter_so_armeabi_v7a.so
-          asset_content_type: application/octet-stream
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
