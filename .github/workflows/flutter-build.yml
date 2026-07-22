@@ -3,10 +3,15 @@ name: Flutter Build
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Flutter version (e.g. 3.27.1) OR Dart SDK version (e.g. 3.5.4)'
-        required: true
+      flutter_version:
+        description: 'Flutter SDK version (e.g. 3.27.1). Leave blank if entering Dart version below.'
+        required: false
         default: '3.27.1'
+        type: string
+      dart_version:
+        description: 'Dart SDK version (e.g. 3.5.4 or 3.0.0). Used ONLY if Flutter version above is empty.'
+        required: false
+        default: ''
         type: string
       build_armv7:
         description: 'Build for armeabi-v7a (32-bit ARM)'
@@ -30,33 +35,39 @@ jobs:
         run: |
           PYTHON_SCRIPT='
           import sys, urllib.request, json
-          query = sys.argv[1].strip()
-          url = "https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json"
-          try:
-              req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-              data = json.loads(urllib.request.urlopen(req).read())
-              # Check Flutter exact version
-              for r in data["releases"]:
-                  if r.get("version") == query:
-                      print(r["version"])
-                      sys.exit(0)
-              # Check Dart SDK version (stable first)
-              for r in data["releases"]:
-                  dart_ver = r.get("dart_sdk_version", "")
-                  if r.get("channel") == "stable" and (dart_ver == query or dart_ver.startswith(query + " ") or dart_ver.startswith(query + "-")):
-                      print(r["version"])
-                      sys.exit(0)
-              # Check Dart SDK version (any channel)
-              for r in data["releases"]:
-                  dart_ver = r.get("dart_sdk_version", "")
-                  if dart_ver == query or dart_ver.startswith(query + " ") or dart_ver.startswith(query + "-"):
-                      print(r["version"])
-                      sys.exit(0)
-          except Exception as e:
-              pass
-          print(query)
+
+          fl_in = sys.argv[1].strip()
+          dart_in = sys.argv[2].strip()
+
+          if fl_in:
+              print(fl_in)
+              sys.exit(0)
+
+          if dart_in:
+              url = "https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json"
+              try:
+                  req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                  data = json.loads(urllib.request.urlopen(req).read())
+                  # Check Dart SDK version (stable first)
+                  for r in data["releases"]:
+                      dart_ver = r.get("dart_sdk_version", "")
+                      if r.get("channel") == "stable" and (dart_ver == dart_in or dart_ver.startswith(dart_in + " ") or dart_ver.startswith(dart_in + "-")):
+                          print(r["version"])
+                          sys.exit(0)
+                  # Check Dart SDK version (any channel)
+                  for r in data["releases"]:
+                      dart_ver = r.get("dart_sdk_version", "")
+                      if dart_ver == dart_in or dart_ver.startswith(dart_in + " ") or dart_ver.startswith(dart_in + "-"):
+                          print(r["version"])
+                          sys.exit(0)
+              except Exception:
+                  pass
+              print(dart_in)
+              sys.exit(0)
+
+          print("3.27.1")
           '
-          RESOLVED_VERSION=$(python3 -c "$PYTHON_SCRIPT" "${{ inputs.version }}")
+          RESOLVED_VERSION=$(python3 -c "$PYTHON_SCRIPT" "${{ inputs.flutter_version }}" "${{ inputs.dart_version }}")
           echo "Resolved Flutter Version: $RESOLVED_VERSION"
           echo "flutter_version=$RESOLVED_VERSION" >> $GITHUB_OUTPUT
 
