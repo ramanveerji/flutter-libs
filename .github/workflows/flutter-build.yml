@@ -98,20 +98,19 @@ jobs:
           echo "Building APK for target platforms: $TARGET_PLATFORMS"
           flutter build apk --release --target-platform "$TARGET_PLATFORMS"
 
-      - name: Copy & Zip Shared Libraries
+      - name: Extract & Zip Stripped Shared Libraries
         run: |
           mkdir -p output_libs
-          ARM64_PATH=$(find flutter_so/build/app/intermediates/ -name "libflutter.so" | grep "arm64-v8a" | head -n 1)
-          if [ -n "$ARM64_PATH" ]; then
-            cp "$ARM64_PATH" output_libs/libflutter_so_arm64.so
-            (cd output_libs && zip -9 libflutter_so_arm64.zip libflutter_so_arm64.so && rm libflutter_so_arm64.so)
-          fi
+          APK_PATH="flutter_so/build/app/outputs/flutter-apk/app-release.apk"
+
+          # Extract arm64 stripped libflutter.so directly from the release APK
+          unzip -p "$APK_PATH" "lib/arm64-v8a/libflutter.so" > output_libs/libflutter_so_arm64.so
+          (cd output_libs && zip -9 libflutter_so_arm64.zip libflutter_so_arm64.so && rm libflutter_so_arm64.so)
+
+          # Extract armeabi-v7a if requested
           if [ "${{ inputs.build_armv7 }}" = "true" ]; then
-            ARMV7_PATH=$(find flutter_so/build/app/intermediates/ -name "libflutter.so" | grep "armeabi-v7a" | head -n 1)
-            if [ -n "$ARMV7_PATH" ]; then
-              cp "$ARMV7_PATH" output_libs/libflutter_so_armeabi_v7a.so
-              (cd output_libs && zip -9 libflutter_so_armeabi_v7a.zip libflutter_so_armeabi_v7a.so && rm libflutter_so_armeabi_v7a.so)
-            fi
+            unzip -p "$APK_PATH" "lib/armeabi-v7a/libflutter.so" > output_libs/libflutter_so_armeabi_v7a.so
+            (cd output_libs && zip -9 libflutter_so_armeabi_v7a.zip libflutter_so_armeabi_v7a.so && rm libflutter_so_armeabi_v7a.so)
           fi
 
       - name: Create GitHub Release & Upload Assets
