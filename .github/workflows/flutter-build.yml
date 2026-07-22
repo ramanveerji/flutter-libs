@@ -13,6 +13,11 @@ on:
         required: false
         default: ''
         type: string
+      build_arm64:
+        description: 'Build for arm64-v8a (64-bit ARM)'
+        required: true
+        type: boolean
+        default: true
       build_armv7:
         description: 'Build for armeabi-v7a (32-bit ARM)'
         required: true
@@ -74,50 +79,114 @@ jobs:
           echo "Resolved Flutter Version: $RESOLVED_VERSION"
           echo "flutter_version=$RESOLVED_VERSION" >> $GITHUB_OUTPUT
 
+      - name: Check Existing Release
+        id: check_release
+        run: |
+          TAG="flutter-v${{ steps.resolve_version.outputs.flutter_version }}"
+          API_URL="https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG"
+          
+          RESPONSE=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "$API_URL")
+          RELEASE_URL=$(echo "$RESPONSE" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('html_url', ''))" 2>/dev/null)
+
+          if [ -n "$RELEASE_URL" ] && [ "$RELEASE_URL" != "None" ]; then
+            echo "release_url=$RELEASE_URL" >> $GITHUB_OUTPUT
+            echo "exists=true" >> $GITHUB_OUTPUT
+            
+            echo "::notice ::Release for $TAG already exists at $RELEASE_URL"
+            echo "## 🚀 Release Already Exists!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "The requested Flutter library has already been built and published." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "👉 **[Click here to view/download the release]($RELEASE_URL)**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Set up Flutter
+        if: steps.check_release.outputs.exists != 'true'
         uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ steps.resolve_version.outputs.flutter_version }}
 
-      - name: Print Flutter version
-        run: flutter --version
+      - name: Extract SDK Versions
+        if: steps.check_release.outputs.exists != 'true'
+        id: get_sdk_versions
+        run: |
+          FLUTTER_VER=$(flutter --version | head -n 1 | awk '{print $2}')
+          DART_VER=$(dart --version 2>&1 | awk '{print $4}' | tr -d ',')
+          echo "Flutter Version: $FLUTTER_VER"
+          echo "Dart Version: $DART_VER"
+          echo "flutter_version=$FLUTTER_VER" >> $GITHUB_OUTPUT
+          echo "dart_version=$DART_VER" >> $GITHUB_OUTPUT
 
       - name: Create Flutter project
+        if: steps.check_release.outputs.exists != 'true'
         run: |
           flutter create flutter_so
           cd flutter_so
           flutter pub get
 
       - name: Build APK for target platforms
+        if: steps.check_release.outputs.exists != 'true'
         run: |
           cd flutter_so
-          TARGET_PLATFORMS="android-arm64"
-          if [ "${{ inputs.build_armv7 }}" = "true" ]; then
-            TARGET_PLATFORMS="android-arm,android-arm64"
+          TARGET_PLATFORMS=""
+          if [ "${{ inputs.build_arm64 }}" = "true" ]; then
+            TARGET_PLATFORMS="android-arm64"
           fi
+          if [ "${{ inputs.build_armv7 }}" = "true" ]; then
+            if [ -n "$TARGET_PLATFORMS" ]; then
+              TARGET_PLATFORMS="$TARGET_PLATFORMS,android-arm"
+            else
+              TARGET_PLATFORMS="android-arm"
+            fi
+          fi
+
+          if [ -z "$TARGET_PLATFORMS" ]; then
+            echo "Error: Please select at least one architecture (arm64 or armv7)!"
+            exit 1
+          fi
+
           echo "Building APK for target platforms: $TARGET_PLATFORMS"
           flutter build apk --release --target-platform "$TARGET_PLATFORMS"
 
       - name: Extract & Zip Stripped Shared Libraries
+        if: steps.check_release.outputs.exists != 'true'
         run: |
           mkdir -p output_libs
           APK_PATH="flutter_so/build/app/outputs/flutter-apk/app-release.apk"
 
-          # Extract arm64 stripped libflutter.so directly from the release APK
-          unzip -p "$APK_PATH" "lib/arm64-v8a/libflutter.so" > output_libs/libflutter_so_arm64.so
-          (cd output_libs && zip -9 libflutter_so_arm64.zip libflutter_so_arm64.so && rm libflutter_so_arm64.so)
+          # Process arm64 if requested
+          if [ "${{ inputs.build_arm64 }}" = "true" ]; then
+            mkdir -p output_libs/arm64
+            unzip -p "$APK_PATH" "lib/arm64-v8a/libflutter.so" > output_libs/arm64/libflutter.so
+            (cd output_libs && zip -9 -r libflutter_so_arm64.zip arm64 && rm -rf arm64)
+          fi
 
-          # Extract armeabi-v7a if requested
+          # Process armv7 if requested
           if [ "${{ inputs.build_armv7 }}" = "true" ]; then
-            unzip -p "$APK_PATH" "lib/armeabi-v7a/libflutter.so" > output_libs/libflutter_so_armeabi_v7a.so
-            (cd output_libs && zip -9 libflutter_so_armeabi_v7a.zip libflutter_so_armeabi_v7a.so && rm libflutter_so_armeabi_v7a.so)
+            mkdir -p output_libs/armv7
+            unzip -p "$APK_PATH" "lib/armeabi-v7a/libflutter.so" > output_libs/armv7/libflutter.so
+            (cd output_libs && zip -9 -r libflutter_so_armeabi_v7a.zip armv7 && rm -rf armv7)
           fi
 
       - name: Create GitHub Release & Upload Assets
+        if: steps.check_release.outputs.exists != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: flutter-v${{ steps.resolve_version.outputs.flutter_version }}
-          name: Flutter Release v${{ steps.resolve_version.outputs.flutter_version }}
+          tag_name: flutter-v${{ steps.get_sdk_versions.outputs.flutter_version }}
+          name: Flutter Release v${{ steps.get_sdk_versions.outputs.flutter_version }} (Dart v${{ steps.get_sdk_versions.outputs.dart_version }})
+          body: |
+            ## 📦 Flutter Native Shared Libraries (`libflutter.so`)
+
+            | Component | Version |
+            | --- | --- |
+            | **Flutter SDK** | `${{ steps.get_sdk_versions.outputs.flutter_version }}` |
+            | **Dart SDK** | `${{ steps.get_sdk_versions.outputs.dart_version }}` |
+
+            ### Included Assets:
+            ${{ inputs.build_arm64 && '- `libflutter_so_arm64.zip` (Contains `arm64/libflutter.so`)' || '' }}
+            ${{ inputs.build_armv7 && '- `libflutter_so_armeabi_v7a.zip` (Contains `armv7/libflutter.so`)' || '' }}
           draft: false
           prerelease: false
           files: output_libs/*
