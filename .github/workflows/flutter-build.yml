@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       flutter_version:
-        description: 'Flutter SDK version (e.g. 3.27.1). Leave blank if entering Dart version below.'
+        description: 'Flutter SDK version (e.g. 3.27.1)'
         required: false
-        default: '3.27.1'
+        default: ''
         type: string
       dart_version:
-        description: 'Dart SDK version (e.g. 3.5.4 or 3.0.0). Used ONLY if Flutter version above is empty.'
+        description: 'Dart SDK version (e.g. 3.5.4 or 3.10.8)'
         required: false
         default: ''
         type: string
@@ -33,6 +33,11 @@ jobs:
       - name: Resolve Flutter Version from Input
         id: resolve_version
         run: |
+          if [ -z "${{ inputs.flutter_version }}" ] && [ -z "${{ inputs.dart_version }}" ]; then
+            echo "Error: Please specify either a flutter_version OR a dart_version!"
+            exit 1
+          fi
+
           PYTHON_SCRIPT='
           import sys, urllib.request, json
 
@@ -64,8 +69,6 @@ jobs:
                   pass
               print(dart_in)
               sys.exit(0)
-
-          print("3.27.1")
           '
           RESOLVED_VERSION=$(python3 -c "$PYTHON_SCRIPT" "${{ inputs.flutter_version }}" "${{ inputs.dart_version }}")
           echo "Resolved Flutter Version: $RESOLVED_VERSION"
